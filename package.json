@@ -1,6 +1,9 @@
 {
   "name": "fire-safety-fault-reporting-system",
   "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
   "description": "機電消防故障回報系統",
   "private": true,
   "scripts": {

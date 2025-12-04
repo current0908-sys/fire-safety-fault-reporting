@@ -1,49 +1,13 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+// lib/db.ts
+// 用記憶體模擬資料庫，方便在 Vercel 部署（沒有真正的 SQLite 檔案）
 
-const dbPath = path.join(process.cwd(), 'data', 'faults.db');
-const dbDir = path.dirname(dbPath);
-
-// 确保数据目录存在
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
-
-const db = new Database(dbPath);
-
-// 初始化数据库表
-export function initDatabase() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS faults (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      reporter_name TEXT NOT NULL,
-      reporter_phone TEXT NOT NULL,
-      location TEXT NOT NULL,
-      equipment_type TEXT NOT NULL,
-      fault_description TEXT NOT NULL,
-      priority TEXT NOT NULL DEFAULT 'medium',
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      assigned_to TEXT,
-      resolution_notes TEXT
-    )
-  `);
-
-  // 创建索引以提高查询性能
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_status ON faults(status);
-    CREATE INDEX IF NOT EXISTS idx_created_at ON faults(created_at);
-    CREATE INDEX IF NOT EXISTS idx_priority ON faults(priority);
-  `);
-}
-
-// 故障状态类型
+// 故障狀態型別
 export type FaultStatus = 'pending' | 'in_progress' | 'resolved' | 'closed';
+
+// 故障優先順序
 export type FaultPriority = 'low' | 'medium' | 'high' | 'urgent';
 
-// 故障接口
+// 故障資料介面
 export interface Fault {
   id: number;
   reporter_name: string;
@@ -59,110 +23,110 @@ export interface Fault {
   resolution_notes: string | null;
 }
 
-// 创建故障报告
-export function createFault(fault: Omit<Fault, 'id' | 'created_at' | 'updated_at'>): Fault {
-  const stmt = db.prepare(`
-    INSERT INTO faults (
-      reporter_name, reporter_phone, location, equipment_type,
-      fault_description, priority, status, assigned_to, resolution_notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+// 🔹 用陣列當成「假資料庫」
+let faults: Fault[] = [];
+let nextId = 1;
 
-  const result = stmt.run(
-    fault.reporter_name,
-    fault.reporter_phone,
-    fault.location,
-    fault.equipment_type,
-    fault.fault_description,
-    fault.priority,
-    fault.status,
-    fault.assigned_to || null,
-    fault.resolution_notes || null
-  );
-
-  return getFaultById(result.lastInsertRowid as number)!;
+// 初始化（現在什麼都不用做，保留函式讓其他檔案可以呼叫）
+export function initDatabase() {
+  // 原本是建立 SQLite 資料表，現在改成什麼都不做
 }
 
-// 获取所有故障
-export function getAllFaults(status?: FaultStatus, priority?: FaultPriority): Fault[] {
-  let query = 'SELECT * FROM faults';
-  const conditions: string[] = [];
-  const params: any[] = [];
+// 建立故障資料
+export function createFault(
+  fault: Omit<Fault, 'id' | 'created_at' | 'updated_at'>
+): Fault {
+  const now = new Date().toISOString();
 
-  if (status) {
-    conditions.push('status = ?');
-    params.push(status);
-  }
+  const newFault: Fault = {
+    id: nextId++,
+    reporter_name: fault.reporter_name,
+    reporter_phone: fault.reporter_phone,
+    location: fault.location,
+    equipment_type: fault.equipment_type,
+    fault_description: fault.fault_description,
+    priority: fault.priority,
+    status: fault.status,
+    assigned_to: fault.assigned_to ?? null,
+    resolution_notes: fault.resolution_notes ?? null,
+    created_at: now,
+    updated_at: now,
+  };
 
-  if (priority) {
-    conditions.push('priority = ?');
-    params.push(priority);
-  }
-
-  if (conditions.length > 0) {
-    query += ' WHERE ' + conditions.join(' AND ');
-  }
-
-  query += ' ORDER BY created_at DESC';
-
-  const stmt = db.prepare(query);
-  return stmt.all(...params) as Fault[];
+  faults.push(newFault);
+  return newFault;
 }
 
-// 根据ID获取故障
+// 取得所有故障（可依狀態 / 優先順序篩選）
+export function getAllFaults(
+  status?: FaultStatus,
+  priority?: FaultPriority
+): Fault[] {
+  return faults
+    .filter((f) => (status ? f.status === status : true))
+    .filter((f) => (priority ? f.priority === priority : true))
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+}
+
+// 依 ID 取得單筆故障
 export function getFaultById(id: number): Fault | null {
-  const stmt = db.prepare('SELECT * FROM faults WHERE id = ?');
-  return stmt.get(id) as Fault | null;
+  return faults.find((f) => f.id === id) ?? null;
 }
 
-// 更新故障状态
+// 更新故障狀態 / 指派 / 備註
 export function updateFaultStatus(
   id: number,
   status: FaultStatus,
   assigned_to?: string,
   resolution_notes?: string
 ): Fault | null {
-  const stmt = db.prepare(`
-    UPDATE faults 
-    SET status = ?, 
-        assigned_to = COALESCE(?, assigned_to),
-        resolution_notes = COALESCE(?, resolution_notes),
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `);
+  const fault = faults.find((f) => f.id === id);
+  if (!fault) return null;
 
-  stmt.run(status, assigned_to || null, resolution_notes || null, id);
-  return getFaultById(id);
+  fault.status = status;
+  fault.assigned_to = assigned_to ?? fault.assigned_to;
+  fault.resolution_notes = resolution_notes ?? fault.resolution_notes;
+  fault.updated_at = new Date().toISOString();
+
+  return fault;
 }
 
-// 删除故障
+// 刪除故障
 export function deleteFault(id: number): boolean {
-  const stmt = db.prepare('DELETE FROM faults WHERE id = ?');
-  const result = stmt.run(id);
-  return result.changes > 0;
+  const before = faults.length;
+  faults = faults.filter((f) => f.id !== id);
+  return faults.length < before;
 }
 
-// 获取统计信息
+// 統計資訊
 export function getStatistics() {
-  const total = db.prepare('SELECT COUNT(*) as count FROM faults').get() as { count: number };
-  const pending = db.prepare("SELECT COUNT(*) as count FROM faults WHERE status = 'pending'").get() as { count: number };
-  const inProgress = db.prepare("SELECT COUNT(*) as count FROM faults WHERE status = 'in_progress'").get() as { count: number };
-  const resolved = db.prepare("SELECT COUNT(*) as count FROM faults WHERE status = 'resolved'").get() as { count: number };
+  const total = faults.length;
+  const pending = faults.filter((f) => f.status === 'pending').length;
+  const inProgress = faults.filter((f) => f.status === 'in_progress').length;
+  const resolved = faults.filter((f) => f.status === 'resolved').length;
+  const closed = faults.filter((f) => f.status === 'closed').length;
 
   return {
-    total: total.count,
-    pending: pending.count,
-    inProgress: inProgress.count,
-    resolved: resolved.count,
+    total,
+    pending,
+    inProgress,
+    resolved,
+    closed,
   };
 }
 
-// 初始化数据库
-initDatabase();
+// 保留 default export，若其他地方有用到
+const db = {
+  initDatabase,
+  createFault,
+  getAllFaults,
+  getFaultById,
+  updateFaultStatus,
+  deleteFault,
+  getStatistics,
+};
 
 export default db;
-
-
-
-
-
